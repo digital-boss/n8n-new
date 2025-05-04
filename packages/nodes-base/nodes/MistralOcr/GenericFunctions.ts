@@ -1,5 +1,4 @@
 import type {
-	IDataObject,
 	IExecuteSingleFunctions,
 	IHttpRequestOptions,
 	IN8nHttpFullResponse,
@@ -10,18 +9,16 @@ import { NodeApiError } from 'n8n-workflow';
 
 export async function processResponseData(
 	this: IExecuteSingleFunctions,
-	data: INodeExecutionData[],
+	items: INodeExecutionData[],
 	response: IN8nHttpFullResponse,
 ): Promise<INodeExecutionData[]> {
 	if (!response.body) {
-		console.log('No response body found');
-		return data;
+		return items;
 	}
 
 	const responseData = response.body as JsonObject;
-	console.log('Response Data Keys:', Object.keys(responseData));
 
-	return data.map((item) => {
+	return items.map((item) => {
 		const newItem = { ...item };
 
 		newItem.json = {
@@ -32,15 +29,9 @@ export async function processResponseData(
 		};
 
 		if (responseData.text) {
-			console.log('Found text property in response');
 			newItem.json.extractedText = responseData.text;
 		} else if (responseData.pages) {
-			console.log(
-				'Found pages property in response with',
-				(responseData.pages as IDataObject[]).length,
-				'pages',
-			);
-			const pages = responseData.pages as IDataObject[];
+			const pages = responseData.pages as Array<{ markdown: string; text: string }>;
 			newItem.json.extractedText = pages
 				.map((page) => page.markdown || page.text || '')
 				.join('\n\n');
@@ -63,83 +54,76 @@ export async function processResponseData(
 
 export async function sendErrorPostReceive(
 	this: IExecuteSingleFunctions,
-	_data: INodeExecutionData[],
+	items: INodeExecutionData[],
 	response: IN8nHttpFullResponse,
 ): Promise<INodeExecutionData[]> {
 	if (response.statusCode && response.statusCode >= 400) {
-		const errorBody = response.body as JsonObject;
+		const inputType = this.getNodeParameter('inputType') as string;
+		const parameterName = inputType === 'url' ? 'Document URL' : 'Binary Property';
 
-		let parameterName = '';
-		let inputType = '';
-		try {
-			inputType = this.getNodeParameter('inputType', null) as string;
-			parameterName = inputType === 'url' ? 'Document URL' : 'Binary Property';
-		} catch {}
+		const error = response.body as {
+			message: string;
+			statusMessage: string;
+			detail?: Array<{
+				loc: string[];
+				msg: string;
+			}>;
+		};
 
 		if (response.statusCode === 422) {
-			const errors = (errorBody.detail as any[])?.map(
-				(err) => `${err.loc?.join('.') || 'field'}: ${err.msg || 'Invalid value'}`,
-			) || ['Invalid request parameters'];
+			const errorDetails = error.detail?.map(
+				(errorDetail) =>
+					`${errorDetail.loc?.join('.') || 'field'}: ${errorDetail.msg || 'Invalid value'}`,
+			) ?? ['Invalid request parameters'];
 
-			throw new NodeApiError(this.getNode(), errorBody, {
-				message: parameterName
-					? `The request contains invalid parameters in "${parameterName}"`
-					: 'The request contains invalid parameters',
-				description: `To fix this, update the following values:\n${errors.join('\n')}\n\nMake sure your input values match the required format and try again.`,
+			throw new NodeApiError(this.getNode(), error, {
+				message: `The request contains invalid parameters in "${parameterName}"`,
+				description: `To fix this, update the following values:\n${errorDetails.join('\n')}\n\nMake sure your input values match the required format and try again.`,
 			});
 		}
 
-		const message = (errorBody.message || response.statusMessage) as string;
+		const message = error.message || response.statusMessage;
 
 		if (message?.toLowerCase().includes('fetching file from url')) {
-			const url = message.match(/https?:\/\/[^\s]+/)?.[0] || 'the specified URL';
+			// Todo: why get the url from the error body when you have it as node parameter? For example, what if the url starts with http
+			const url = message.match(/https?:\/\/[^\s]+/)?.[0] ?? 'the specified URL';
 
-			throw new NodeApiError(this.getNode(), errorBody, {
-				message: parameterName
-					? `Unable to access the document at ${url} in "${parameterName}"`
-					: `Unable to access the document at ${url}`,
+			throw new NodeApiError(this.getNode(), error, {
+				message: `Unable to access the document at ${url} in "${parameterName}"`,
 				description:
-					"To fix this:\n- Confirm the URL is correct and publicly accessible\n- Make sure the document doesn't require login\n- Check if the server allows external access\n\nAlternatively, download the file and use the Binary Data option instead.",
+					"To fix this:\n- Confirm the URL is correct and publicly accessible\n- Make sure the document doesn't require authorization\n- Check if the server allows external access\n\nAlternatively, download the file and use the Binary Data option instead.",
 			});
 		}
 
-		throw new NodeApiError(this.getNode(), errorBody, {
-			message: message || 'The request to Mistral OCR service was unsuccessful',
+		throw new NodeApiError(this.getNode(), error, {
+			message: message ?? 'The request to Mistral OCR service was unsuccessful',
 			description:
 				'To fix this:\n- Double-check your input parameters\n- Verify your API credentials\n- Make sure the Mistral OCR service is available\n- Try a different document or input method',
 		});
 	}
 
-	return _data;
+	return items;
 }
 
 export async function handleBinaryData(
 	this: IExecuteSingleFunctions,
 	requestOptions: IHttpRequestOptions,
 ): Promise<IHttpRequestOptions> {
-	const propName = this.getNodeParameter('binaryProperty') as string;
-	const binary = this.helpers.assertBinaryData(propName);
-	const buffer = await this.helpers.getBinaryDataBuffer(propName);
-
 	const model = this.getNodeParameter('model') as string;
+	const binaryProperty = this.getNodeParameter('binaryProperty') as string;
 
-	const base64Data = buffer.toString('base64');
-	const dataURL = `data:${binary.mimeType};base64,${base64Data}`;
+	const binaryData = this.helpers.assertBinaryData(binaryProperty);
+	const binaryDataBuffer = await this.helpers.getBinaryDataBuffer(binaryProperty);
+	const base64Data = binaryDataBuffer.toString('base64');
+	const dataURL = `data:${binaryData.mimeType};base64,${base64Data}`;
 
-	const jsonBody: IDataObject = {
+	requestOptions.body = {
 		model,
 		document: {
 			type: 'document_url',
 			document_url: dataURL,
 		},
 	};
-
-	requestOptions.headers = {
-		...requestOptions.headers,
-		'Content-Type': 'application/json',
-	};
-
-	requestOptions.body = jsonBody;
 
 	return requestOptions;
 }

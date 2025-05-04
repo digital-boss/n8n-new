@@ -18,7 +18,7 @@ export const description: INodeProperties[] = [
 			{
 				name: 'Extract Text',
 				value: 'extractText',
-				description: 'Extract text from documents using OCR',
+				description: 'Extract text from document using OCR',
 				action: 'Extract text',
 				routing: {
 					request: {

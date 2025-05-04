@@ -8,7 +8,12 @@ const properties: INodeProperties[] = [
 		displayName: 'Model',
 		name: 'model',
 		type: 'options',
-		options: [{ name: 'mistral-ocr-latest', value: 'mistral-ocr-latest' }],
+		options: [
+			{
+				name: 'mistral-ocr-latest',
+				value: 'mistral-ocr-latest',
+			},
+		],
 		description: 'The OCR model to use',
 		required: true,
 		default: 'mistral-ocr-latest',

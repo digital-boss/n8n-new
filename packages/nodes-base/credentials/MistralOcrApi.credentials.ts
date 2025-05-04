@@ -20,14 +20,6 @@ export class MistralOcrApi implements ICredentialType {
 			typeOptions: { password: true },
 			required: true,
 			default: '',
-			description: 'Your Mistral OCR API key. Get it from your Mistral account.',
-		},
-		{
-			displayName: 'Base URL',
-			name: 'baseUrl',
-			type: 'string',
-			default: 'https://api.mistral.ai',
-			description: 'The base URL for the Mistral OCR API.',
 		},
 	];
 
@@ -42,7 +34,7 @@ export class MistralOcrApi implements ICredentialType {
 
 	test: ICredentialTestRequest = {
 		request: {
-			baseURL: '={{$credentials.baseUrl}}',
+			baseURL: 'https://api.mistral.ai',
 			url: '/v1/models',
 			method: 'GET',
 			headers: {

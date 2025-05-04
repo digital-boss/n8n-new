@@ -9,12 +9,12 @@ export class MistralOcr implements INodeType {
 		name: 'mistralOcr',
 		icon: {
 			light: 'file:mistralOcr.svg',
-			dark: 'file:mistralOcr.dark.svg',
+			dark: 'file:mistralOcr.svg',
 		},
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{ $parameter["operation"] + ": " + $parameter["resource"] }}',
-		description: 'Extract text and layout information from documents using Mistral’s OCR API.',
+		description: 'Extract text and layout information from documents using Mistral’s OCR API',
 		defaults: {
 			name: 'Mistral OCR',
 		},
@@ -28,7 +28,7 @@ export class MistralOcr implements INodeType {
 			},
 		],
 		requestDefaults: {
-			baseURL: '={{ $credentials.baseUrl }}',
+			baseURL: 'https://api.mistral.ai',
 			ignoreHttpStatusErrors: true,
 		},
 		properties: [
