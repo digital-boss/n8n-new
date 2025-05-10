@@ -85,13 +85,15 @@ export async function sendErrorPostReceive(
 		const message = error.message || response.statusMessage;
 
 		if (message?.toLowerCase().includes('fetching file from url')) {
-			// Todo: why get the url from the error body when you have it as node parameter? For example, what if the url starts with http
-			const url = message.match(/https?:\/\/[^\s]+/)?.[0] ?? 'the specified URL';
+			const url =
+				inputType === 'url'
+					? (this.getNodeParameter('documentUrl') as string)
+					: 'the specified URL';
 
 			throw new NodeApiError(this.getNode(), error, {
-				message: `Unable to access the document at ${url} in "${parameterName}"`,
+				message: `Unable to access the file at ${url} in "${parameterName}"`,
 				description:
-					"To fix this:\n- Confirm the URL is correct and publicly accessible\n- Make sure the document doesn't require authorization\n- Check if the server allows external access\n\nAlternatively, download the file and use the Binary Data option instead.",
+					"To fix this:\n- Confirm the URL is correct and publicly accessible\n- Make sure the file doesn't require authorization\n- Check if the server allows external access\n\nAlternatively, download the file and use the Binary Data option instead.",
 			});
 		}
 
