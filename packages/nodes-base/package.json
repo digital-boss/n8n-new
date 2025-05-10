@@ -243,7 +243,6 @@
       "dist/credentials/MiroOAuth2Api.credentials.js",
       "dist/credentials/MispApi.credentials.js",
       "dist/credentials/MistApi.credentials.js",
-      "dist/credentials/MistralOcrApi.credentials.js",
       "dist/credentials/MoceanApi.credentials.js",
       "dist/credentials/MondayComApi.credentials.js",
       "dist/credentials/MondayComOAuth2Api.credentials.js",
