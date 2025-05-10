@@ -23,7 +23,7 @@ export class MistralOcr implements INodeType {
 		usableAsTool: true,
 		credentials: [
 			{
-				name: 'mistralOcrApi',
+				name: 'mistralCloudApi',
 				required: true,
 			},
 		],
