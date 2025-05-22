@@ -3,10 +3,14 @@ import type {
 	INodeTypeDescription,
 	IExecuteFunctions,
 	INodeExecutionData,
+	IHttpRequestOptions,
+	IExecuteSingleFunctions,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import { document } from './descriptions';
+import { handleBinaryData, processResponseData, sendErrorPostReceive } from './GenericFunctions';
+import type { IRequestBody } from './types';
 
 export class MistralOcr implements INodeType {
 	description: INodeTypeDescription = {
@@ -56,177 +60,161 @@ export class MistralOcr implements INodeType {
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
-		const results: INodeExecutionData[] = [];
+		const returnData: INodeExecutionData[] = [];
 
-		const enableBatch = this.getNodeParameter('enableBatchProcessing', 0, false) as boolean;
-		const batchSize = this.getNodeParameter('batchSize', 0, 25) as number;
-		const model = this.getNodeParameter('model', 0) as string;
-		const inputType = this.getNodeParameter('inputType', 0) as string;
+		const enableBatchProcessing = this.getNodeParameter('enableBatchProcessing', 0) as boolean;
+		const batchSize = enableBatchProcessing ? (this.getNodeParameter('batchSize', 0) as number) : 0;
 
-		const endpoint = '/v1/ocr/batch';
+		if (!enableBatchProcessing) {
+			for (let i = 0; i < items.length; i++) {
+				const model = this.getNodeParameter('model', i) as string;
+				const inputType = this.getNodeParameter('inputType', i) as string;
 
-		function chunkArrayWithIndex(
-			array: INodeExecutionData[],
-			size: number,
-		): Array<{ batch: INodeExecutionData[]; indexes: number[] }> {
-			const result: Array<{ batch: INodeExecutionData[]; indexes: number[] }> = [];
-			for (let i = 0; i < array.length; i += size) {
-				result.push({
-					batch: array.slice(i, i + size),
-					indexes: Array.from({ length: Math.min(size, array.length - i) }, (_, k) => i + k),
-				});
-			}
-			return result;
-		}
+				let body: any;
 
-		const batches = enableBatch
-			? chunkArrayWithIndex(items, batchSize)
-			: items.map((item, idx) => ({ batch: [item], indexes: [idx] }));
-
-		for (const { batch, indexes } of batches) {
-			const documents: any[] = [];
-
-			for (let i = 0; i < batch.length; i++) {
-				const item = batch[i];
-				const itemIndex = indexes[i];
-
-				try {
-					if (inputType === 'binary') {
-						const binaryProperty = this.getNodeParameter(
-							'binaryProperty',
-							itemIndex,
-							'data',
-						) as string;
-						this.helpers.assertBinaryData(itemIndex, binaryProperty);
-						const binaryDataBuffer = await this.helpers.getBinaryDataBuffer(
-							itemIndex,
-							binaryProperty,
+				if (inputType === 'binary') {
+					const binaryProperty = this.getNodeParameter('binaryProperty', i) as string;
+					body = await handleBinaryData(this.helpers, items[i], i, binaryProperty, model);
+				} else if (inputType === 'url') {
+					const documentUrl = this.getNodeParameter('documentUrl', i) as string;
+					if (!documentUrl) {
+						throw new NodeOperationError(
+							this.getNode(),
+							`Document URL must be provided for item ${i}`,
 						);
-						const base64Data = binaryDataBuffer.toString('base64');
-						const binaryData = item.binary![binaryProperty];
+					}
 
-						documents.push({
+					body = {
+						model,
+						document: {
 							type: 'document_url',
-							document_url: `data:${binaryData.mimeType};base64,${base64Data}`,
-							include_image_base64: true,
-						});
-					} else if (inputType === 'url') {
-						const documentUrl = this.getNodeParameter('documentUrl', itemIndex) as string;
-						if (!documentUrl) {
-							throw new NodeOperationError(
-								this.getNode(),
-								`Document URL is required for item at index ${itemIndex}`,
-							);
-						}
-
-						let url = documentUrl;
-						if (!url.startsWith('http://') && !url.startsWith('https://')) {
-							url = `https://${url}`;
-						}
-
-						try {
-							new URL(url);
-							documents.push({
-								type: 'document_url',
-								document_url: url,
-								include_image_base64: true,
-							});
-						} catch (error) {
-							throw new NodeOperationError(
-								this.getNode(),
-								`Invalid document URL at index ${itemIndex}: "${documentUrl}". Please provide a valid URL.`,
-							);
-						}
-					}
-				} catch (error) {
-					if (error instanceof NodeOperationError) {
-						throw error;
-					}
-					throw new NodeOperationError(
-						this.getNode(),
-						`Error processing item at index ${itemIndex}: ${error.message}`,
-					);
+							document_url: documentUrl,
+						},
+					};
+				} else {
+					throw new NodeOperationError(this.getNode(), `Unsupported input type: ${inputType}`);
 				}
-			}
 
-			if (documents.length === 0) {
-				throw new NodeOperationError(
-					this.getNode(),
-					'No valid documents to process. Please check your input data.',
-				);
-			}
+				const requestOptions: IHttpRequestOptions = {
+					method: 'POST',
+					url: 'https://api.mistral.ai/v1/ocr',
+					headers: { 'Content-Type': 'application/json' },
+					body,
+					json: true,
+				};
 
-			const body = {
-				model,
-				documents,
-				include_image_base64: true,
-			};
-
-			try {
-				const response = await this.helpers.httpRequestWithAuthentication.call(
+				const response = await this.helpers.requestWithAuthentication.call(
 					this,
 					'mistralCloudApi',
-					{
-						method: 'POST',
-						url: endpoint,
-						headers: {
-							'Content-Type': 'application/json',
-							Accept: 'application/json',
-						},
-						body,
-						json: true,
-					},
+					requestOptions,
 				);
 
-				if (response.results && Array.isArray(response.results)) {
-					for (let i = 0; i < response.results.length; i++) {
-						const result = response.results[i];
-						const originalItem = batch[i];
-						const newItem = { ...originalItem };
+				await sendErrorPostReceive.call(
+					this as unknown as IExecuteSingleFunctions,
+					[items[i]],
+					response,
+				);
 
-						newItem.json = {
-							...newItem.json,
-							ocrResult: result,
-							responseStatusCode: response.statusCode,
-						};
+				const processedItems = await processResponseData.call(
+					this as unknown as IExecuteSingleFunctions,
+					[items[i]],
+					response,
+				);
 
-						if (result.text) {
-							newItem.json.extractedText = result.text;
-						} else if (result.pages) {
-							const pages = result.pages as Array<{ markdown: string; text: string }>;
-							newItem.json.extractedText = pages
-								.map((page) => page.markdown || page.text || '')
-								.join('\n\n');
-							newItem.json.pageCount = pages.length;
+				returnData.push(processedItems[0]);
+			}
+		} else {
+			// Batch processing mode
+			if (!batchSize || batchSize < 1) {
+				throw new NodeOperationError(this.getNode(), 'Batch size must be greater than zero');
+			}
+
+			for (let start = 0; start < items.length; start += batchSize) {
+				const batchItems = items.slice(start, start + batchSize);
+				const model = this.getNodeParameter('model', 0) as string;
+
+				// Build array of documents for the batch request
+				const documents = await Promise.all(
+					batchItems.map(async (item, i) => {
+						const idx = start + i;
+						const inputType = this.getNodeParameter('inputType', idx) as string;
+
+						if (inputType === 'binary') {
+							const binaryProperty = this.getNodeParameter('binaryProperty', idx) as string;
+							const body = (await handleBinaryData(
+								this.helpers,
+								item,
+								idx,
+								binaryProperty,
+								model,
+							)) as IRequestBody;
+							if (!body.document) {
+								throw new NodeOperationError(this.getNode(), `Invalid binary data for item ${idx}`);
+							}
+							return body.document;
+						} else if (inputType === 'url') {
+							const documentUrl = this.getNodeParameter('documentUrl', idx) as string;
+							if (!documentUrl) {
+								throw new NodeOperationError(
+									this.getNode(),
+									`Document URL must be provided for item ${idx}`,
+								);
+							}
+							return {
+								type: 'document_url',
+								document_url: documentUrl,
+							};
+						} else {
+							throw new NodeOperationError(this.getNode(), `Unsupported input type: ${inputType}`);
 						}
+					}),
+				);
 
-						results.push(newItem);
-					}
-				} else {
-					const newItem = { ...batch[0] };
-					newItem.json = {
-						...newItem.json,
-						ocrResult: response,
-						responseStatusCode: response.statusCode,
-					};
+				const body = {
+					model,
+					documents,
+				};
 
-					if (response.text) {
-						newItem.json.extractedText = response.text;
-					} else if (response.pages) {
-						const pages = response.pages as Array<{ markdown: string; text: string }>;
-						newItem.json.extractedText = pages
-							.map((page) => page.markdown || page.text || '')
-							.join('\n\n');
-						newItem.json.pageCount = pages.length;
-					}
+				const requestOptions: IHttpRequestOptions = {
+					method: 'POST',
+					url: 'https://api.mistral.ai/v1/ocr',
+					headers: { 'Content-Type': 'application/json' },
+					body,
+					json: true,
+				};
 
-					results.push(newItem);
+				const response = await this.helpers.requestWithAuthentication.call(
+					this,
+					'mistralCloudApi',
+					requestOptions,
+				);
+
+				await sendErrorPostReceive.call(
+					this as unknown as IExecuteSingleFunctions,
+					batchItems,
+					response,
+				);
+
+				// The API returns an array of responses matching each document in the batch
+				const responseDataArray = response.body as any[];
+				if (!Array.isArray(responseDataArray) || responseDataArray.length !== documents.length) {
+					throw new NodeOperationError(this.getNode(), 'Batch response length mismatch');
 				}
-			} catch (error) {
-				throw new NodeOperationError(this.getNode(), `Error processing request: ${error.message}`);
+
+				for (let j = 0; j < batchItems.length; j++) {
+					const processedItems = await processResponseData.call(
+						this as unknown as IExecuteSingleFunctions,
+						[batchItems[j]],
+						{
+							...response,
+							body: responseDataArray[j],
+						},
+					);
+					returnData.push(processedItems[0]);
+				}
 			}
 		}
 
-		return [results];
+		return [returnData];
 	}
 }

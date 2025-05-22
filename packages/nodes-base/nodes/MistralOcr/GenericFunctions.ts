@@ -1,22 +1,19 @@
 import type {
+	IExecuteFunctions,
 	IExecuteSingleFunctions,
 	IHttpRequestOptions,
 	IN8nHttpFullResponse,
 	INodeExecutionData,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError } from 'n8n-workflow';
+import { ApplicationError, NodeApiError } from 'n8n-workflow';
 
 export async function processResponseData(
 	this: IExecuteSingleFunctions,
 	items: INodeExecutionData[],
 	response: IN8nHttpFullResponse,
 ): Promise<INodeExecutionData[]> {
-	if (!response.body) {
-		return items;
-	}
-
-	const responseData = response.body as JsonObject;
+	const responseData = response as unknown as JsonObject;
 
 	return items.map((item) => {
 		const newItem = { ...item };
@@ -108,24 +105,28 @@ export async function sendErrorPostReceive(
 }
 
 export async function handleBinaryData(
-	this: IExecuteSingleFunctions,
-	requestOptions: IHttpRequestOptions,
-): Promise<IHttpRequestOptions> {
-	const model = this.getNodeParameter('model') as string;
-	const binaryProperty = this.getNodeParameter('binaryProperty') as string;
+	helpers: IExecuteFunctions['helpers'],
+	item: INodeExecutionData,
+	itemIndex: number,
+	binaryProperty: string,
+	model: string,
+): Promise<IHttpRequestOptions['body']> {
+	if (!item.binary || !item.binary[binaryProperty]) {
+		throw new ApplicationError(
+			`Binary property "${binaryProperty}" not found on item ${itemIndex}.`,
+		);
+	}
 
-	const binaryData = this.helpers.assertBinaryData(binaryProperty);
-	const binaryDataBuffer = await this.helpers.getBinaryDataBuffer(binaryProperty);
+	const binaryData = item?.binary[binaryProperty];
+	const binaryDataBuffer = await helpers.getBinaryDataBuffer(itemIndex, binaryProperty);
 	const base64Data = binaryDataBuffer.toString('base64');
 	const dataURL = `data:${binaryData.mimeType};base64,${base64Data}`;
 
-	requestOptions.body = {
+	return {
 		model,
 		document: {
 			type: 'document_url',
 			document_url: dataURL,
 		},
 	};
-
-	return requestOptions;
 }

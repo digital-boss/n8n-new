@@ -1,8 +1,6 @@
 import type { INodeProperties } from 'n8n-workflow';
 import { updateDisplayOptions } from 'n8n-workflow';
 
-import { handleBinaryData } from '../../GenericFunctions';
-
 const properties: INodeProperties[] = [
 	{
 		displayName: 'Model',
@@ -17,12 +15,6 @@ const properties: INodeProperties[] = [
 		description: 'The OCR model to use',
 		required: true,
 		default: 'mistral-ocr-latest',
-		routing: {
-			send: {
-				type: 'body',
-				property: 'model',
-			},
-		},
 	},
 	{
 		displayName: 'Input Type',
@@ -41,13 +33,6 @@ const properties: INodeProperties[] = [
 		description: 'How the document will be provided',
 		required: true,
 		default: 'binary',
-		routing: {
-			send: {
-				type: 'body',
-				property: 'document.type',
-				value: '={{ $value === "binary" ? "image_data" : "document_url" }}',
-			},
-		},
 	},
 	{
 		displayName: 'Binary Property',
@@ -61,11 +46,6 @@ const properties: INodeProperties[] = [
 		displayOptions: {
 			show: {
 				inputType: ['binary'],
-			},
-		},
-		routing: {
-			send: {
-				preSend: [handleBinaryData],
 			},
 		},
 	},
@@ -82,12 +62,6 @@ const properties: INodeProperties[] = [
 				inputType: ['url'],
 			},
 		},
-		routing: {
-			send: {
-				type: 'body',
-				property: 'document.document_url',
-			},
-		},
 	},
 	{
 		displayName: 'Enable Batch Processing',
@@ -95,13 +69,6 @@ const properties: INodeProperties[] = [
 		type: 'boolean',
 		description: 'Whether to process multiple documents in a single API call (more cost-efficient)',
 		default: false,
-		routing: {
-			send: {
-				type: 'body',
-				property: 'batch',
-				value: '={{ $value ? { size: $parameter.batchSize } : undefined }}',
-			},
-		},
 	},
 	{
 		displayName: 'Batch Size',
@@ -117,12 +84,6 @@ const properties: INodeProperties[] = [
 		displayOptions: {
 			show: {
 				enableBatchProcessing: [true],
-			},
-		},
-		routing: {
-			send: {
-				type: 'body',
-				property: 'batch.size',
 			},
 		},
 	},
