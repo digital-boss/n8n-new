@@ -1,16 +1,17 @@
+import chunk from 'lodash/chunk';
+import FormData from 'form-data';
 import type {
-	INodeType,
-	INodeTypeDescription,
+	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
-	IHttpRequestOptions,
-	IExecuteSingleFunctions,
+	INodeType,
+	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
 
 import { document } from './descriptions';
-import { handleBinaryData, processResponseData, sendErrorPostReceive } from './GenericFunctions';
-import type { IRequestBody } from './types';
+import { encodeBinaryData, mistralApiRequest } from './GenericFunctions';
+import type { BatchItemResult, BatchJob, Page } from './types';
 
 export class MistralOcr implements INodeType {
 	description: INodeTypeDescription = {
@@ -36,10 +37,6 @@ export class MistralOcr implements INodeType {
 				required: true,
 			},
 		],
-		requestDefaults: {
-			baseURL: 'https://api.mistral.ai',
-			ignoreHttpStatusErrors: true,
-		},
 		properties: [
 			{
 				displayName: 'Resource',
@@ -54,6 +51,7 @@ export class MistralOcr implements INodeType {
 				],
 				default: 'document',
 			},
+
 			...document.description,
 		],
 	};
@@ -61,156 +59,211 @@ export class MistralOcr implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+		const resource = this.getNodeParameter('resource', 0);
+		const operation = this.getNodeParameter('operation', 0);
 
-		const enableBatchProcessing = this.getNodeParameter('enableBatchProcessing', 0) as boolean;
-		const batchSize = enableBatchProcessing ? (this.getNodeParameter('batchSize', 0) as number) : 0;
+		if (resource === 'document') {
+			if (operation === 'extractText') {
+				const enableBatch = this.getNodeParameter('batch', 0, false) as boolean;
 
-		if (!enableBatchProcessing) {
-			for (let i = 0; i < items.length; i++) {
-				const model = this.getNodeParameter('model', i) as string;
-				const inputType = this.getNodeParameter('inputType', i) as string;
+				if (enableBatch) {
+					try {
+						const model = this.getNodeParameter('model', 0) as string;
+						const batchSize = this.getNodeParameter('batchSize', 0, 50) as number;
 
-				let body: any;
+						const itemsWithIndex = items.map((item, index) => ({
+							...item,
+							index,
+						}));
 
-				if (inputType === 'binary') {
-					const binaryProperty = this.getNodeParameter('binaryProperty', i) as string;
-					body = await handleBinaryData(this.helpers, items[i], i, binaryProperty, model);
-				} else if (inputType === 'url') {
-					const documentUrl = this.getNodeParameter('documentUrl', i) as string;
-					if (!documentUrl) {
-						throw new NodeOperationError(
-							this.getNode(),
-							`Document URL must be provided for item ${i}`,
-						);
-					}
+						const fileIds = [];
+						for (const batch of chunk(itemsWithIndex, batchSize)) {
+							const entries = [];
+							for (const item of batch) {
+								const documentType = this.getNodeParameter('documentType', item.index) as
+									| 'document_url'
+									| 'image_url';
+								const { dataUrl, fileName } = await encodeBinaryData.call(this, item.index);
 
-					body = {
-						model,
-						document: {
-							type: 'document_url',
-							document_url: documentUrl,
-						},
-					};
-				} else {
-					throw new NodeOperationError(this.getNode(), `Unsupported input type: ${inputType}`);
-				}
-
-				const requestOptions: IHttpRequestOptions = {
-					method: 'POST',
-					url: 'https://api.mistral.ai/v1/ocr',
-					headers: { 'Content-Type': 'application/json' },
-					body,
-					json: true,
-				};
-
-				const response = await this.helpers.requestWithAuthentication.call(
-					this,
-					'mistralCloudApi',
-					requestOptions,
-				);
-
-				await sendErrorPostReceive.call(
-					this as unknown as IExecuteSingleFunctions,
-					[items[i]],
-					response,
-				);
-
-				const processedItems = await processResponseData.call(
-					this as unknown as IExecuteSingleFunctions,
-					[items[i]],
-					response,
-				);
-
-				returnData.push(processedItems[0]);
-			}
-		} else {
-			// Batch processing mode
-			if (!batchSize || batchSize < 1) {
-				throw new NodeOperationError(this.getNode(), 'Batch size must be greater than zero');
-			}
-
-			for (let start = 0; start < items.length; start += batchSize) {
-				const batchItems = items.slice(start, start + batchSize);
-				const model = this.getNodeParameter('model', 0) as string;
-
-				// Build array of documents for the batch request
-				const documents = await Promise.all(
-					batchItems.map(async (item, i) => {
-						const idx = start + i;
-						const inputType = this.getNodeParameter('inputType', idx) as string;
-
-						if (inputType === 'binary') {
-							const binaryProperty = this.getNodeParameter('binaryProperty', idx) as string;
-							const body = (await handleBinaryData(
-								this.helpers,
-								item,
-								idx,
-								binaryProperty,
-								model,
-							)) as IRequestBody;
-							if (!body.document) {
-								throw new NodeOperationError(this.getNode(), `Invalid binary data for item ${idx}`);
+								entries.push({
+									custom_id: item.index.toString(),
+									body: {
+										document: {
+											type: documentType,
+											document_name: fileName,
+											[documentType]: dataUrl,
+										},
+									},
+								});
 							}
-							return body.document;
-						} else if (inputType === 'url') {
-							const documentUrl = this.getNodeParameter('documentUrl', idx) as string;
-							if (!documentUrl) {
-								throw new NodeOperationError(
-									this.getNode(),
-									`Document URL must be provided for item ${idx}`,
-								);
-							}
-							return {
-								type: 'document_url',
-								document_url: documentUrl,
-							};
-						} else {
-							throw new NodeOperationError(this.getNode(), `Unsupported input type: ${inputType}`);
+
+							const formData = new FormData();
+							formData.append(
+								'file',
+								Buffer.from(entries.map((entry) => JSON.stringify(entry)).join('\n')),
+								{
+									filename: 'batch_file.jsonl',
+									contentType: 'application/json',
+								},
+							);
+							formData.append('purpose', 'batch');
+
+							const fileResponse = await mistralApiRequest.call(
+								this,
+								'POST',
+								'/v1/files',
+								formData,
+							);
+							fileIds.push(fileResponse.id);
 						}
-					}),
-				);
 
-				const body = {
-					model,
-					documents,
-				};
+						const jobIds = [];
+						for (const fileId of fileIds) {
+							const body: IDataObject = {
+								model,
+								input_files: [fileId],
+								endpoint: '/v1/ocr',
+							};
 
-				const requestOptions: IHttpRequestOptions = {
-					method: 'POST',
-					url: 'https://api.mistral.ai/v1/ocr',
-					headers: { 'Content-Type': 'application/json' },
-					body,
-					json: true,
-				};
+							jobIds.push((await mistralApiRequest.call(this, 'POST', '/v1/batch/jobs', body)).id);
+						}
 
-				const response = await this.helpers.requestWithAuthentication.call(
-					this,
-					'mistralCloudApi',
-					requestOptions,
-				);
+						const jobResults: BatchJob[] = [];
+						for (const jobId of jobIds) {
+							let job = (await mistralApiRequest.call(
+								this,
+								'GET',
+								`/v1/batch/jobs/${jobId}`,
+							)) as BatchJob;
+							while (job.status === 'QUEUED' || job.status === 'RUNNING') {
+								await new Promise((resolve) => setTimeout(resolve, 2000));
+								job = (await mistralApiRequest.call(
+									this,
+									'GET',
+									`/v1/batch/jobs/${jobId}`,
+								)) as BatchJob;
+							}
+							jobResults.push(job);
+						}
 
-				await sendErrorPostReceive.call(
-					this as unknown as IExecuteSingleFunctions,
-					batchItems,
-					response,
-				);
+						for (const jobResult of jobResults) {
+							if (jobResult.status !== 'SUCCESS' || jobResult.errors.length) {
+								// Todo: handle errors
+							} else {
+								const fileResponse = (await mistralApiRequest.call(
+									this,
+									'GET',
+									`/v1/files/${jobResult.output_file}/content`,
+								)) as string;
+								const batchResult: BatchItemResult[] = fileResponse
+									.trim()
+									.split('\n')
+									.map((json) => JSON.parse(json));
 
-				// The API returns an array of responses matching each document in the batch
-				const responseDataArray = response.body as any[];
-				if (!Array.isArray(responseDataArray) || responseDataArray.length !== documents.length) {
-					throw new NodeOperationError(this.getNode(), 'Batch response length mismatch');
-				}
+								for (const result of batchResult) {
+									const index = parseInt(result.custom_id);
+									if (result.error) {
+										const executionData = this.helpers.constructExecutionMetaData(
+											this.helpers.returnJsonArray({ error: result.error }),
+											{ itemData: { item: index } },
+										);
+										returnData.push(...executionData);
+									}
+									// Todo: use common function if any modification to response body needs to be made
+									const data = {
+										...result.response.body,
+										extractedText: result.response.body.pages
+											.map((page) => page.markdown)
+											.join('\n\n'),
+										pageCount: result.response.body.pages.length,
+									};
+									const executionData = this.helpers.constructExecutionMetaData(
+										this.helpers.returnJsonArray(data),
+										{ itemData: { item: index } },
+									);
+									returnData.push(...executionData);
+								}
+							}
+						}
+					} catch (error) {
+						// Todo: handle error
+						throw error;
+					}
+				} else {
+					let responseData: IDataObject;
 
-				for (let j = 0; j < batchItems.length; j++) {
-					const processedItems = await processResponseData.call(
-						this as unknown as IExecuteSingleFunctions,
-						[batchItems[j]],
-						{
-							...response,
-							body: responseDataArray[j],
-						},
-					);
-					returnData.push(processedItems[0]);
+					for (let i = 0; i < items.length; i++) {
+						try {
+							const model = this.getNodeParameter('model', i) as string;
+							const inputType = this.getNodeParameter('inputType', i) as 'binary' | 'url';
+							const documentType = this.getNodeParameter('documentType', i) as
+								| 'document_url'
+								| 'image_url';
+
+							if (inputType === 'binary') {
+								const { dataUrl, fileName } = await encodeBinaryData.call(this, i);
+
+								const body: IDataObject = {
+									model,
+									document: {
+										type: documentType,
+										document_name: fileName,
+										[documentType]: dataUrl,
+									},
+								};
+
+								responseData = (await mistralApiRequest.call(
+									this,
+									'POST',
+									'/v1/ocr',
+									body,
+								)) as IDataObject;
+
+								// Todo: use common function if any modification to response body needs to be made
+								const pages = responseData.pages as Array<{ markdown: string; text: string }>;
+								responseData.extractedText = pages.map((page) => page.markdown).join('\n\n');
+								responseData.pageCount = pages.length;
+							} else {
+								const url = this.getNodeParameter('url', i) as string;
+
+								const body: IDataObject = {
+									model,
+									document: {
+										type: documentType,
+										[documentType]: url,
+									},
+								};
+
+								responseData = (await mistralApiRequest.call(
+									this,
+									'POST',
+									'/v1/ocr',
+									body,
+								)) as IDataObject;
+
+								// Todo: use common function if any modification to response body needs to be made
+								const pages = responseData.pages as Page[];
+								responseData.extractedText = pages.map((page) => page.markdown).join('\n\n');
+								responseData.pageCount = pages.length;
+							}
+
+							const executionData = this.helpers.constructExecutionMetaData(
+								this.helpers.returnJsonArray(responseData),
+								{ itemData: { item: i } },
+							);
+							returnData.push(...executionData);
+						} catch (error) {
+							if (this.continueOnFail()) {
+								const executionErrorData = this.helpers.constructExecutionMetaData(
+									this.helpers.returnJsonArray({ error: error.message }),
+									{ itemData: { item: i } },
+								);
+								returnData.push(...executionErrorData);
+								continue;
+							}
+							throw error;
+						}
+					}
 				}
 			}
 		}

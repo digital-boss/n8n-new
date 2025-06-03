@@ -1,13 +1,32 @@
-export interface IRequestBody {
-	model: string;
-	document?: {
-		type: string;
-		image_base64?: string;
-		document_url?: string;
+import type { IDataObject } from 'n8n-workflow';
+
+export interface BatchJob {
+	id: string;
+	status:
+		| 'QUEUED'
+		| 'RUNNING'
+		| 'SUCCESS'
+		| 'FAILED'
+		| 'TIMEOUT_EXCEEDED'
+		| 'CANCELLATION_REQUESTED'
+		| 'CANCELLED';
+	output_file: string;
+	errors: IDataObject[];
+}
+
+export interface BatchItemResult {
+	id: string;
+	custom_id: string;
+	response: {
+		body: {
+			pages: Page[];
+		};
 	};
-	documents?: Array<{
-		type: string;
-		document_url?: string;
-		image_base64?: string;
-	}>;
+	error?: IDataObject;
+}
+
+export interface Page {
+	index: number;
+	markdown: string;
+	images: IDataObject[];
 }

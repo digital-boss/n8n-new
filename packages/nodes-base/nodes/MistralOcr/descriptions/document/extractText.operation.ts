@@ -33,6 +33,29 @@ const properties: INodeProperties[] = [
 		description: 'How the document will be provided',
 		required: true,
 		default: 'binary',
+		disabledOptions: {
+			hide: {
+				batch: [{ _cnd: { eq: false } }],
+			},
+		},
+	},
+	{
+		displayName: 'Document Type',
+		name: 'documentType',
+		type: 'options',
+		options: [
+			{
+				name: 'Document',
+				value: 'document_url',
+			},
+			{
+				name: 'Image',
+				value: 'image_url',
+			},
+		],
+		description: 'How the document will be provided',
+		required: true,
+		default: 'document_url',
 	},
 	{
 		displayName: 'Binary Property',
@@ -50,10 +73,10 @@ const properties: INodeProperties[] = [
 		},
 	},
 	{
-		displayName: 'Document URL',
-		name: 'documentUrl',
+		displayName: 'URL',
+		name: 'url',
 		type: 'string',
-		description: 'URL of the document to process',
+		description: 'URL of the document or image to process',
 		placeholder: 'e.g. https://example.com/document.pdf',
 		required: true,
 		default: '',
@@ -65,7 +88,7 @@ const properties: INodeProperties[] = [
 	},
 	{
 		displayName: 'Enable Batch Processing',
-		name: 'enableBatchProcessing',
+		name: 'batch',
 		type: 'boolean',
 		description: 'Whether to process multiple documents in a single API call (more cost-efficient)',
 		default: false,
@@ -75,15 +98,12 @@ const properties: INodeProperties[] = [
 		name: 'batchSize',
 		type: 'number',
 		description: 'Maximum number of documents to process in a single batch',
-		default: 25,
-		typeOptions: {
-			minValue: 1,
-			maxValue: 100,
-		},
+		default: 50,
+		typeOptions: { maxValue: 2048 },
 		required: true,
 		displayOptions: {
 			show: {
-				enableBatchProcessing: [true],
+				batch: [true],
 			},
 		},
 	},

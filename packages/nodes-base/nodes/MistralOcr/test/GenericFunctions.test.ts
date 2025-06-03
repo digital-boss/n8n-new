@@ -1,6 +1,6 @@
 import { NodeApiError } from 'n8n-workflow';
 
-import { processResponseData, sendErrorPostReceive, handleBinaryData } from '../GenericFunctions';
+import { processResponseData, sendErrorPostReceive, encodeBinaryData } from '../GenericFunctions';
 
 describe('Mistral OCR Generic Functions', () => {
 	describe('processResponseData', () => {
@@ -130,7 +130,7 @@ describe('Mistral OCR Generic Functions', () => {
 				body: {},
 			};
 
-			const result = await handleBinaryData.call(mockContext, requestOptions);
+			const result = await encodeBinaryData.call(mockContext, requestOptions);
 
 			expect(result.body).toEqual({
 				model: 'mistral-ocr-latest',
