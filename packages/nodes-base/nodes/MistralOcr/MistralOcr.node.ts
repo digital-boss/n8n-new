@@ -1,5 +1,5 @@
-import chunk from 'lodash/chunk';
 import FormData from 'form-data';
+import chunk from 'lodash/chunk';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -7,11 +7,11 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionTypes } from 'n8n-workflow';
+import { NodeApiError, NodeConnectionTypes } from 'n8n-workflow';
 
 import { document } from './descriptions';
-import { encodeBinaryData, mistralApiRequest } from './GenericFunctions';
-import type { BatchItemResult, BatchJob, Page } from './types';
+import { encodeBinaryData, mistralApiRequest, processResponseData } from './GenericFunctions';
+import type { BatchItemResult, BatchJob } from './types';
 
 export class MistralOcr implements INodeType {
 	description: INodeTypeDescription = {
@@ -147,8 +147,26 @@ export class MistralOcr implements INodeType {
 						}
 
 						for (const jobResult of jobResults) {
-							if (jobResult.status !== 'SUCCESS' || jobResult.errors.length) {
-								// Todo: handle errors
+							if (
+								jobResult.status !== 'SUCCESS' ||
+								(jobResult.errors && jobResult.errors.length > 0)
+							) {
+								for (let i = 0; i < items.length; i++) {
+									if (this.continueOnFail()) {
+										const errorData = this.helpers.constructExecutionMetaData(
+											this.helpers.returnJsonArray({
+												error: 'Batch job failed or returned errors',
+											}),
+											{ itemData: { item: i } },
+										);
+										returnData.push(...errorData);
+									} else {
+										throw new NodeApiError(this.getNode(), {
+											message: `Batch job failed with status: ${jobResult.status}`,
+										});
+									}
+								}
+								continue;
 							} else {
 								const fileResponse = (await mistralApiRequest.call(
 									this,
@@ -169,14 +187,8 @@ export class MistralOcr implements INodeType {
 										);
 										returnData.push(...executionData);
 									}
-									// Todo: use common function if any modification to response body needs to be made
-									const data = {
-										...result.response.body,
-										extractedText: result.response.body.pages
-											.map((page) => page.markdown)
-											.join('\n\n'),
-										pageCount: result.response.body.pages.length,
-									};
+									const data = processResponseData(result.response.body);
+
 									const executionData = this.helpers.constructExecutionMetaData(
 										this.helpers.returnJsonArray(data),
 										{ itemData: { item: index } },
@@ -219,10 +231,7 @@ export class MistralOcr implements INodeType {
 									body,
 								)) as IDataObject;
 
-								// Todo: use common function if any modification to response body needs to be made
-								const pages = responseData.pages as Array<{ markdown: string; text: string }>;
-								responseData.extractedText = pages.map((page) => page.markdown).join('\n\n');
-								responseData.pageCount = pages.length;
+								responseData = processResponseData(responseData);
 							} else {
 								const url = this.getNodeParameter('url', i) as string;
 
@@ -241,10 +250,7 @@ export class MistralOcr implements INodeType {
 									body,
 								)) as IDataObject;
 
-								// Todo: use common function if any modification to response body needs to be made
-								const pages = responseData.pages as Page[];
-								responseData.extractedText = pages.map((page) => page.markdown).join('\n\n');
-								responseData.pageCount = pages.length;
+								responseData = processResponseData(responseData);
 							}
 
 							const executionData = this.helpers.constructExecutionMetaData(
@@ -253,14 +259,6 @@ export class MistralOcr implements INodeType {
 							);
 							returnData.push(...executionData);
 						} catch (error) {
-							if (this.continueOnFail()) {
-								const executionErrorData = this.helpers.constructExecutionMetaData(
-									this.helpers.returnJsonArray({ error: error.message }),
-									{ itemData: { item: i } },
-								);
-								returnData.push(...executionErrorData);
-								continue;
-							}
 							throw error;
 						}
 					}

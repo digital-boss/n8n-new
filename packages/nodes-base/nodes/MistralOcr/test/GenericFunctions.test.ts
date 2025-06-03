@@ -1,144 +1,155 @@
 import { NodeApiError } from 'n8n-workflow';
 
-import { processResponseData, sendErrorPostReceive, encodeBinaryData } from '../GenericFunctions';
+import { encodeBinaryData, processResponseData, sendErrorPostReceive } from '../GenericFunctions';
 
 describe('Mistral OCR Generic Functions', () => {
+	describe('encodeBinaryData', () => {
+		const binaryBuffer = Buffer.from('testdata');
+		const base64 = binaryBuffer.toString('base64');
+
+		const context = {
+			getNodeParameter: jest.fn(),
+			helpers: {
+				assertBinaryData: jest.fn(),
+				getBinaryDataBuffer: jest.fn(),
+			},
+		} as any;
+
+		beforeEach(() => {
+			jest.clearAllMocks();
+		});
+
+		it('should encode binary data to a data URL', async () => {
+			context.getNodeParameter.mockReturnValue('binaryProp1');
+			context.helpers.assertBinaryData.mockReturnValue({
+				mimeType: 'image/png',
+				fileName: 'file.png',
+			});
+			context.helpers.getBinaryDataBuffer.mockResolvedValue(binaryBuffer);
+
+			const result = await encodeBinaryData.call(context, 0);
+
+			expect(context.getNodeParameter).toHaveBeenCalledWith('binaryProperty', 0);
+			expect(context.helpers.assertBinaryData).toHaveBeenCalledWith(0, 'binaryProp1');
+			expect(context.helpers.getBinaryDataBuffer).toHaveBeenCalledWith(0, 'binaryProp1');
+
+			expect(result).toEqual({
+				dataUrl: `data:image/png;base64,${base64}`,
+				fileName: 'file.png',
+			});
+		});
+	});
+
 	describe('processResponseData', () => {
-		it('should return items unchanged if no response body', async () => {
-			const items = [{ json: { test: 'data' } }];
-			const response = { body: null, statusCode: 200 };
-			const result = await processResponseData.call({}, items, response);
-			expect(result).toEqual(items);
+		it('should extract text and page count from pages', () => {
+			const input = {
+				pages: [
+					{ markdown: 'Page 1 markdown', text: 'Page 1 text' },
+					{ markdown: 'Page 2 markdown', text: 'Page 2 text' },
+				],
+				otherProp: 'test',
+			};
+
+			const result = processResponseData(input);
+
+			expect(result.extractedText).toBe('Page 1 markdown\n\nPage 2 markdown');
+			expect(result.pageCount).toBe(2);
+			expect(result.otherProp).toBe('test');
 		});
 
-		it('should process text response correctly', async () => {
-			const items = [{ json: { test: 'data' } }];
+		it('should handle empty pages array', () => {
+			const input = { pages: [] };
 
-			const response = {
-				body: { text: 'Extracted text content' },
-				statusCode: 200,
-			};
-			const result = await processResponseData.call({}, items, response);
-			expect(result[0].json.extractedText).toBe('Extracted text content');
-			expect(result[0].json.ocrResult).toEqual({ text: 'Extracted text content' });
-		});
+			const result = processResponseData(input);
 
-		it('should process pages response correctly', async () => {
-			const items = [{ json: { test: 'data' } }];
-			const response = {
-				body: {
-					pages: [
-						{ markdown: 'Page 1', text: 'Text 1' },
-						{ markdown: 'Page 2', text: 'Text 2' },
-					],
-				},
-				statusCode: 200,
-			};
-			const result = await processResponseData.call({}, items, response);
-			expect(result[0].json.extractedText).toBe('Page 1\n\nPage 2');
-			expect(result[0].json.pageCount).toBe(2);
-		});
-
-		it('should handle processed file in response', async () => {
-			const items = [{ json: { test: 'data' } }];
-			const response = {
-				body: { processed_file: 'base64data' },
-				statusCode: 200,
-			};
-			const result = await processResponseData.call({}, items, response);
-			expect(result[0].binary?.processedDocument).toBeDefined();
-			expect(result[0].binary?.processedDocument?.data).toBe('base64data');
-			expect(result[0].binary?.processedDocument?.mimeType).toBe('application/pdf');
+			expect(result.extractedText).toBe('');
+			expect(result.pageCount).toBe(0);
 		});
 	});
 
 	describe('sendErrorPostReceive', () => {
-		it('should return items unchanged if status code is less than 400', async () => {
-			const items = [{ json: { test: 'data' } }];
-			const response = { statusCode: 200 };
-			const result = await sendErrorPostReceive.call(
-				{ getNodeParameter: () => 'url' },
-				items,
-				response,
-			);
-			expect(result).toEqual(items);
+		const context = {
+			getNodeParameter: jest.fn(),
+			getNode: jest.fn(),
+		} as any;
+
+		const items = [{ json: {} }] as any;
+
+		beforeEach(() => {
+			jest.clearAllMocks();
 		});
 
-		it('should handle 422 validation error', async () => {
-			const items = [{ json: { test: 'data' } }];
+		it('should return items if statusCode < 400', async () => {
+			const response = { statusCode: 200, body: {} };
+			const result = await sendErrorPostReceive.call(context, items, response as any);
+			expect(result).toBe(items);
+		});
+
+		it('should throw detailed error on 422 with details', async () => {
 			const response = {
 				statusCode: 422,
 				body: {
 					detail: [
-						{ loc: ['document_url'], msg: 'Invalid URL format' },
-						{ loc: ['model'], msg: 'Invalid model' },
+						{ loc: ['field1'], msg: 'Invalid value' },
+						{ loc: ['field2'], msg: 'Missing' },
 					],
 				},
 			};
 
-			await expect(
-				sendErrorPostReceive.call(
-					{ getNodeParameter: () => 'url', getNode: () => ({ name: 'test' }) },
-					items,
-					response,
-				),
-			).rejects.toThrow(NodeApiError);
+			context.getNodeParameter.mockReturnValue('url');
+			context.getNode.mockReturnValue({});
+
+			await expect(sendErrorPostReceive.call(context, items, response as any)).rejects.toThrow(
+				NodeApiError,
+			);
 		});
 
-		it('should handle URL access error', async () => {
-			const items = [{ json: { test: 'data' } }];
+		it('should throw invalid image URL error', async () => {
 			const response = {
 				statusCode: 400,
-				body: {
-					message: 'Error fetching file from URL',
-				},
+				body: { message: 'could not be loaded as a valid image' },
 			};
 
-			await expect(
-				sendErrorPostReceive.call(
-					{
-						getNodeParameter: () => 'url',
-						getNode: () => ({ name: 'test' }),
-					},
-					items,
-					response,
-				),
-			).rejects.toThrow(NodeApiError);
+			context.getNodeParameter.mockReturnValue('url');
+			context.getNode.mockReturnValue({});
+
+			await expect(sendErrorPostReceive.call(context, items, response as any)).rejects.toThrow(
+				'Invalid image URL',
+			);
 		});
-	});
 
-	describe('handleBinaryData', () => {
-		it('should format binary data correctly', async () => {
-			const mockBinaryData = {
-				mimeType: 'application/pdf',
-				data: 'test-data',
+		it('should throw fetch file URL error', async () => {
+			const response = {
+				statusCode: 400,
+				body: { message: 'Error fetching file from URL' },
 			};
 
-			const mockContext = {
-				getNodeParameter: (param: string) => {
-					if (param === 'model') return 'mistral-ocr-latest';
-					if (param === 'binaryProperty') return 'data';
-					return null;
-				},
-				helpers: {
-					assertBinaryData: () => mockBinaryData,
-					getBinaryDataBuffer: async () => Buffer.from('test-data'),
-				},
+			context.getNodeParameter.mockImplementation((param) =>
+				param === 'inputType'
+					? 'url'
+					: param === 'documentUrl'
+						? 'http://example.com/file.pdf'
+						: undefined,
+			);
+			context.getNode.mockReturnValue({});
+
+			await expect(sendErrorPostReceive.call(context, items, response as any)).rejects.toThrow(
+				'Unable to access the file at http://example.com/file.pdf',
+			);
+		});
+
+		it('should throw generic error if no special cases matched', async () => {
+			const response = {
+				statusCode: 400,
+				body: { message: 'Some other error' },
 			};
 
-			const requestOptions = {
-				body: {},
-			};
+			context.getNodeParameter.mockReturnValue('url');
+			context.getNode.mockReturnValue({});
 
-			const result = await encodeBinaryData.call(mockContext, requestOptions);
-
-			expect(result.body).toEqual({
-				model: 'mistral-ocr-latest',
-				document: {
-					type: 'document_url',
-					document_url: 'data:application/pdf;base64,dGVzdC1kYXRh',
-				},
-			});
+			await expect(sendErrorPostReceive.call(context, items, response as any)).rejects.toThrow(
+				'Some other error',
+			);
 		});
 	});
 });

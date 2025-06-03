@@ -11,6 +11,8 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError } from 'n8n-workflow';
 
+import type { Page } from './types';
+
 export async function mistralApiRequest(
 	this: IExecuteFunctions,
 	method: IHttpRequestMethods,
@@ -53,48 +55,13 @@ export async function encodeBinaryData(
 	return { dataUrl, fileName: binaryData.fileName };
 }
 
-export async function processResponseData(
-	this: IExecuteSingleFunctions,
-	items: INodeExecutionData[],
-	response: IN8nHttpFullResponse,
-): Promise<INodeExecutionData[]> {
-	const responseData = response as unknown as JsonObject;
-
-	return items.map((item) => {
-		const newItem = { ...item };
-
-		newItem.json = {
-			...newItem.json,
-			ocrResult: responseData,
-			responseStatusCode: response.statusCode,
-			responseDebugInfo: 'Check logs for detailed response information',
-		};
-
-		// Todo: don't think there is even a text property. I only see markdown in API docs.
-		if (responseData.text) {
-			newItem.json.extractedText = responseData.text;
-		} else if (responseData.pages) {
-			const pages = responseData.pages as Array<{ markdown: string; text: string }>;
-			newItem.json.extractedText = pages
-				.map((page) => page.markdown || page.text || '')
-				.join('\n\n');
-			newItem.json.pageCount = pages.length;
-		}
-
-		// Todo: I think any file response will be base64. Double check if this property exists.
-		if (responseData.processed_file) {
-			newItem.binary = {
-				...newItem.binary,
-				processedDocument: {
-					data: responseData.processed_file as string,
-					fileName: `processed-${Date.now()}.pdf`,
-					mimeType: 'application/pdf',
-				},
-			};
-		}
-
-		return newItem;
-	});
+export function processResponseData(response: IDataObject): IDataObject {
+	const pages = response.pages as Page[];
+	return {
+		...response,
+		extractedText: pages.map((page) => page.markdown).join('\n\n'),
+		pageCount: pages.length,
+	};
 }
 
 export async function sendErrorPostReceive(
